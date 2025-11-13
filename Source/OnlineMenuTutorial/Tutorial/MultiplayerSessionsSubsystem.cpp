@@ -4,45 +4,54 @@
 #include "MultiplayerSessionsSubsystem.h"
 #include "OnlineSubsystem.h"
 #include "OnlineSessionSettings.h"
+#include "Interfaces/OnlineIdentityInterface.h"
 #include "Online/OnlineSessionNames.h"
 
 UMultiplayerSessionsSubsystem::UMultiplayerSessionsSubsystem() :
 	ServerNameToFind(""),
 	SessionName("Multiplayer Session Name"),
 	CreateSessionAfterDestroy(false),
-	DestroyServerName("")
+	DestroyServerName(""),
+	IsLoggedIn(false)
 {
-	//PrintString("MSS Constructor");
 }
 
 void UMultiplayerSessionsSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
-	//PrintString("MSS Init");
 
 	// Get online subsystem
 	OnlineSubsystem = IOnlineSubsystem::Get();
-	if (OnlineSubsystem)
-	{
-		SessionInterface = OnlineSubsystem->GetSessionInterface();
-		if (SessionInterface.IsValid()) // This is actually a shared pointer
-		{
-			// Valid!
-			FString onlineSubsystemName = OnlineSubsystem->GetSubsystemName().ToString();
-			PrintString(FString::Printf(TEXT("Valid Online Subsystem: %s"), *onlineSubsystemName));
 
-			// Binding a function to the delegate which fires when the creation of a session is complete
-			// We are delivering the address of the function
-			SessionInterface->OnCreateSessionCompleteDelegates.AddUObject(this,
-				&UMultiplayerSessionsSubsystem::OnSessionCreatedComplete);
-			SessionInterface->OnDestroySessionCompleteDelegates.AddUObject(this,
-				&UMultiplayerSessionsSubsystem::OnDestroySessionComplete);
-			SessionInterface->OnFindSessionsCompleteDelegates.AddUObject(this,
-				&UMultiplayerSessionsSubsystem::OnFindSessionsComplete);
-			SessionInterface->OnJoinSessionCompleteDelegates.AddUObject(this,
-				&UMultiplayerSessionsSubsystem::OnJoinSessionComplete);
-		}
+	if (!OnlineSubsystem)
+	{
+		PrintString("UMultiplayerSessionsSubsystem: Initialize: OnlineSubsystem is null.");
+		return;
 	}
+
+	// Operates like a shared pointer
+	SessionInterface = OnlineSubsystem->GetSessionInterface();
+	if (!SessionInterface.IsValid())
+	{
+		PrintString("UMultiplayerSessionsSubsystem: Initialize: SessionInterface is invalid.");
+		return;
+	}
+	
+	FString onlineSubsystemName = OnlineSubsystem->GetSubsystemName().ToString();
+	PrintString(FString::Printf(TEXT("UMultiplayerSessionsSubsystem: Initialize: OnlineSubsystem is %s."), *onlineSubsystemName));
+
+	// Binding callbacks to specific delegates
+	SessionInterface->OnCreateSessionCompleteDelegates.AddUObject(this,
+		&UMultiplayerSessionsSubsystem::OnSessionCreatedComplete);
+	SessionInterface->OnDestroySessionCompleteDelegates.AddUObject(this,
+		&UMultiplayerSessionsSubsystem::OnDestroySessionComplete);
+	SessionInterface->OnFindSessionsCompleteDelegates.AddUObject(this,
+		&UMultiplayerSessionsSubsystem::OnFindSessionsComplete);
+	SessionInterface->OnJoinSessionCompleteDelegates.AddUObject(this,
+		&UMultiplayerSessionsSubsystem::OnJoinSessionComplete);
+
+	// Login upon initialization
+	Login();
 }
 
 void UMultiplayerSessionsSubsystem::Deinitialize()
@@ -59,13 +68,66 @@ void UMultiplayerSessionsSubsystem::PrintString(const FString& Value)
 	}
 }
 
-void UMultiplayerSessionsSubsystem::CreateServer(FString ServerName)
+void UMultiplayerSessionsSubsystem::Login()
 {
-	PrintString("CreateServer: Started");
+	if (!OnlineSubsystem)
+	{
+		PrintString(("UMultiplayerSessionsSubsystem: Login: OnlineSubsystem is null."));
+		return;
+	}
+
+	IOnlineIdentityPtr identity =  OnlineSubsystem->GetIdentityInterface();
+	if (!identity)
+	{
+		PrintString(("UMultiplayerSessionsSubsystem: Login: identity is null."));
+		return;
+	}
+
+	FOnlineAccountCredentials credentials;
+	credentials.Id = FString();
+	credentials.Token = FString();
+	credentials.Type = FString("accountportal");
+	identity->Login(0, credentials);
+
+	identity->OnLoginCompleteDelegates->AddUObject(this, &UMultiplayerSessionsSubsystem::OnLoginComplete);
+}
+
+void UMultiplayerSessionsSubsystem::OnLoginComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& UserId,
+	const FString& Error)
+{
+	PrintString(FString::Printf(TEXT("UMultiplayerSessionsSubsystem: OnLoginComplete: wasSuccessful is %d."), bWasSuccessful));
+	IsLoggedIn = bWasSuccessful;
+
+	if (!OnlineSubsystem)
+	{
+		PrintString(("UMultiplayerSessionsSubsystem: OnLoginComplete: OnlineSubsystem is null."));
+		return;
+	}
+
+	IOnlineIdentityPtr identity =  OnlineSubsystem->GetIdentityInterface();
+	if (!identity)
+	{
+		PrintString(("UMultiplayerSessionsSubsystem: OnLoginComplete: identity is null."));
+		return;
+	}
+
+	identity->ClearOnLoginCompleteDelegates(0, this);
+}
+
+void UMultiplayerSessionsSubsystem::CreateSession(FString ServerName)
+{
+	PrintString("UMultiplayerSessionsSubsystem: CreateSession: Started");
+
+	if (!IsLoggedIn)
+	{
+		PrintString("UMultiplayerSessionsSubsystem: CreateSession: IsLoggedIn is false.");
+		return;
+	}
+	
 	// Check if name is empty
 	if (ServerName.IsEmpty())
 	{
-		PrintString("CreateServer: Server name is empty.");
+		PrintString("UMultiplayerSessionsSubsystem: CreateSession: Server name is empty.");
 		return;
 	}
 
@@ -86,32 +148,46 @@ void UMultiplayerSessionsSubsystem::CreateServer(FString ServerName)
 	sessionSettings.bIsDedicated = false; // Whether it is a dedicated server
 	sessionSettings.bShouldAdvertise = true; // Whether we want the server to be advertised
 	sessionSettings.NumPublicConnections = 2; // Max players
-	sessionSettings.bUseLobbiesIfAvailable = true; // Lobbies API for Steam, just needs to be set to true
+	//sessionSettings.bUseLobbiesIfAvailable = true; // Lobbies API for Steam, just needs to be set to true
 	sessionSettings.bUsesPresence = true; // Whether player's presence are available to the API, must be set to true also
 	sessionSettings.bAllowJoinViaPresence = true;
 
-	bool isLan = true;
+	bool isLan;
 	if (OnlineSubsystem->GetSubsystemName().ToString() == FString("NULL"))
 	{
-		PrintString("CreateServer: isLan = true.");
+		PrintString("UMultiplayerSessionsSubsystem: CreateServer: isLan = true.");
 		isLan = true; // Whether this is LAN or not, change depend on if using Steam or NULL
 	}
 	else
 	{
-		PrintString("CreateServer: isLan = false.");
+		PrintString("UMultiplayerSessionsSubsystem: CreateServer: isLan = false.");
 		isLan = false;
 	}
 	
 	sessionSettings.bIsLANMatch = isLan;
-	// Takes in a key-value pair
-	// Key : FName
-	// Value : Name
-	// How you advertise it
-	sessionSettings.Set(FName("SERVER_NAME"), ServerName, EOnlineDataAdvertisementType::ViaOnlineServiceAndPing);
+	
+	// Takes in a key-value pair and advertisement enum
+	sessionSettings.Set(SEARCH_KEYWORDS, ServerName, EOnlineDataAdvertisementType::ViaOnlineService);
 
-	// 0, as we are creating the session, session name is used to differentiate sessions
-	// This is an async process, we must wait for the call back
+	// This is an asynchronous process which will call OnCreateSessionCompleteDelegate functions
 	SessionInterface->CreateSession(0, SessionName, sessionSettings);
+}
+
+void UMultiplayerSessionsSubsystem::OnSessionCreatedComplete(FName sessionName, bool wasSuccessful)
+{
+	PrintString(FString::Printf(TEXT("UMultiplayerSessionsSubsystem: OnSessionCreatedComplete: wasSuccessful is %d."), wasSuccessful));
+
+	if (!wasSuccessful)
+	{
+		return;
+	}
+	
+	// Launch level as a listen server
+	GetWorld()->ServerTravel("/Game/ThirdPerson/Lvl_ThirdPerson?listen");
+	APlayerController* playerController = GetWorld()->GetFirstPlayerController();
+	playerController->SetShowMouseCursor(false);
+	FInputModeGameOnly inputMode;
+	playerController->SetInputMode(inputMode);
 }
 
 void UMultiplayerSessionsSubsystem::FindServer(FString ServerName)
@@ -146,31 +222,6 @@ void UMultiplayerSessionsSubsystem::FindServer(FString ServerName)
 	
 	// This is an asynchronous call, similar to on create and on destroy sessions.
 	SessionInterface->FindSessions(0, SessionSearch.ToSharedRef());
-}
-
-void UMultiplayerSessionsSubsystem::OnSessionCreatedComplete(FName sessionName, bool wasSuccessful)
-{
-	PrintString(FString::Printf(TEXT("OnSessionCreatedComplete: wasSuccessful = %d"), wasSuccessful));
-
-	if (wasSuccessful)
-	{
-		// Jump server to a new level and launch it as a listen server
-		GetWorld()->ServerTravel("/Game/ThirdPerson/Lvl_ThirdPerson?listen");
-		APlayerController* playerController = GetWorld()->GetFirstPlayerController();
-		playerController->SetShowMouseCursor(false);
-		FInputModeGameOnly inputMode;
-		playerController->SetInputMode(inputMode);
-	}
-}
-
-void UMultiplayerSessionsSubsystem::OnDestroySessionComplete(FName sessionName, bool wasSuccessful)
-{
-	PrintString("OnDestroySessionComplete: Started");
-	if (CreateSessionAfterDestroy)
-	{
-		CreateSessionAfterDestroy = false;
-		CreateServer(DestroyServerName);
-	}
 }
 
 void UMultiplayerSessionsSubsystem::OnFindSessionsComplete(bool wasSuccessful)
@@ -226,6 +277,16 @@ void UMultiplayerSessionsSubsystem::OnFindSessionsComplete(bool wasSuccessful)
 	else
 	{
 		PrintString("OnFindSessionComplete: No sessions found");
+	}
+}
+
+void UMultiplayerSessionsSubsystem::OnDestroySessionComplete(FName sessionName, bool wasSuccessful)
+{
+	PrintString("OnDestroySessionComplete: Started");
+	if (CreateSessionAfterDestroy)
+	{
+		CreateSessionAfterDestroy = false;
+		CreateSession(DestroyServerName);
 	}
 }
 

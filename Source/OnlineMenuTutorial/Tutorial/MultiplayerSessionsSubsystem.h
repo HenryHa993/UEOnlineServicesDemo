@@ -26,28 +26,40 @@ public:
 	void PrintString(const FString& Value);
 
 	UFUNCTION(BlueprintCallable)
-	void CreateServer(FString ServerName);
+	void Login();
+	void OnLoginComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& UserId,
+	const FString& Error);
 
+	// Create server functions
 	UFUNCTION(BlueprintCallable)
-	void FindServer(FString ServerName);
-
+	void CreateSession(FString ServerName);
+	
 	void OnSessionCreatedComplete(FName sessionName, bool wasSuccessful);
 
-	void OnDestroySessionComplete(FName sessionName, bool wasSuccessful);
-
-	IOnlineSubsystem* OnlineSubsystem;
-	IOnlineSessionPtr SessionInterface;
-
-	bool CreateSessionAfterDestroy = false;
+	// Find server functions
+	UFUNCTION(BlueprintCallable)
+	void FindServer(FString ServerName);
 	
-	FString DestroyServerName;
-	FString ServerNameToFind;
-	
-	TSharedPtr<FOnlineSessionSearch> SessionSearch;
-
 	void OnFindSessionsComplete(bool wasSuccessful);
 
+	// Destroy session functions
+	void OnDestroySessionComplete(FName sessionName, bool wasSuccessful);
+
+	// Join session functions
 	void OnJoinSessionComplete(FName sessionName, EOnJoinSessionCompleteResult::Type result);
 
+public:
 	FName SessionName;
+	
+	IOnlineSubsystem* OnlineSubsystem;
+    IOnlineSessionPtr SessionInterface;
+
+    bool CreateSessionAfterDestroy = false;
+    
+    FString DestroyServerName;
+    FString ServerNameToFind;
+
+	TSharedPtr<FOnlineSessionSearch> SessionSearch;
+
+	bool IsLoggedIn;
 };
